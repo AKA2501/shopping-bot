@@ -1,0 +1,69 @@
+name: Stock Check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run without writing to Supabase or sending emails"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      check_replies:
+        description: "Also process inbox replies"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  stock-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      BOT_SMTP_HOST: ${{ secrets.BOT_SMTP_HOST }}
+      BOT_SMTP_PORT: ${{ secrets.BOT_SMTP_PORT }}
+      BOT_SMTP_USER: ${{ secrets.BOT_SMTP_USER }}
+      BOT_SMTP_PASS: ${{ secrets.BOT_SMTP_PASS }}
+      BOT_IMAP_HOST: ${{ secrets.BOT_IMAP_HOST }}
+      BOT_IMAP_PORT: ${{ secrets.BOT_IMAP_PORT }}
+      BOT_IMAP_USER: ${{ secrets.BOT_IMAP_USER }}
+      BOT_IMAP_PASS: ${{ secrets.BOT_IMAP_PASS }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      PRODUCT_CATEGORY: ${{ secrets.PRODUCT_CATEGORY }}
+      PRODUCT_URL_BASE: ${{ secrets.PRODUCT_URL_BASE }}
+      PINCODE: ${{ secrets.PINCODE }}
+      GITHUB_RUN_ID: ${{ github.run_id }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run stock check
+        shell: bash
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.check_replies }}" = "false" ]; then
+            ARGS="$ARGS --skip-replies"
+          fi
+          node src/index.js $ARGS
