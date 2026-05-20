@@ -14,11 +14,26 @@ function assertNoError(error, context) {
   }
 }
 
+class UnsupportedRealtimeTransport {
+  constructor() {
+    throw new Error(
+      'Realtime transport is unavailable in this runtime. This stock bot does not use Supabase Realtime.'
+    );
+  }
+}
+
+function resolveRealtimeTransport() {
+  return globalThis.WebSocket ?? UnsupportedRealtimeTransport;
+}
+
 export function getSupabaseClient(config) {
   return createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false
+    },
+    realtime: {
+      transport: resolveRealtimeTransport()
     }
   });
 }
