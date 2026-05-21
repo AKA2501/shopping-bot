@@ -1,4 +1,4 @@
-import { fetchRecentReplyEmails } from './emailReplyReader.js';
+import { fetchRecentReplyEmails, markReplyEmailsSeen } from './emailReplyReader.js';
 import { getPrimaryReplyTarget, getReplyTargetsForSender } from './config.js';
 import { sendReplyEmail } from './emailSender.js';
 import {
@@ -129,6 +129,7 @@ export async function processReplyInbox(config, supabase, logger) {
   const messages = await fetchRecentReplyEmails(config, logger);
   let processed = 0;
   let skipped = 0;
+  const seenUids = [];
 
   for (const message of messages) {
     if (!isAuthorizedSender(config, message.fromAddress)) {
@@ -136,12 +137,14 @@ export async function processReplyInbox(config, supabase, logger) {
         messageId: message.messageId,
         sender: message.fromAddress
       });
+      seenUids.push(message.uid);
       skipped += 1;
       continue;
     }
 
     const existing = await getExistingEmailCommand(supabase, message.messageId);
     if (existing && !shouldRetryExistingCommand(existing)) {
+      seenUids.push(message.uid);
       skipped += 1;
       continue;
     }
@@ -185,6 +188,7 @@ export async function processReplyInbox(config, supabase, logger) {
         });
       }
 
+      seenUids.push(message.uid);
       processed += 1;
     } catch (error) {
       logger.error('Failed to process reply email', {
@@ -204,6 +208,17 @@ export async function processReplyInbox(config, supabase, logger) {
         });
       }
     }
+  }
+
+  try {
+    await markReplyEmailsSeen(config, logger, seenUids);
+  } catch (error) {
+    logger.warn('Failed to mark reply emails as seen', {
+      error: {
+        name: error.name,
+        message: error.message
+      }
+    });
   }
 
   logger.info('Reply inbox processing finished', {

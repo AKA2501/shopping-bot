@@ -6,7 +6,7 @@ function buildFallbackMessageId(parsed, uid) {
   return `imap-${uid}-${datePart}`;
 }
 
-export async function fetchRecentReplyEmails(config, logger) {
+async function withImapClient(config, logger, callback) {
   const client = new ImapFlow({
     host: config.imapHost,
     port: config.imapPort,
@@ -34,8 +34,22 @@ export async function fetchRecentReplyEmails(config, logger) {
   try {
     await client.connect();
     lock = await client.getMailboxLock(config.imapMailbox);
+    return await callback(client);
+  } finally {
+    lock?.release();
+    await client.logout().catch(() => {
+      client.close();
+    });
+  }
+}
+
+export async function fetchRecentReplyEmails(config, logger) {
+  return withImapClient(config, logger, async (client) => {
     const since = new Date(Date.now() - config.replyLookbackHours * 60 * 60 * 1000);
-    const uids = await client.search({ since });
+    const uids = await client.search({
+      since,
+      seen: false
+    });
     const recentUids = uids.slice(-100);
     const messages = [];
 
@@ -62,10 +76,17 @@ export async function fetchRecentReplyEmails(config, logger) {
     messages.sort((left, right) => new Date(left.receivedAt) - new Date(right.receivedAt));
     logger.info('Fetched reply emails', { count: messages.length, scannedMessages: recentUids.length });
     return messages;
-  } finally {
-    lock?.release();
-    await client.logout().catch(() => {
-      client.close();
-    });
+  });
+}
+
+export async function markReplyEmailsSeen(config, logger, uids) {
+  const uniqueUids = [...new Set((uids ?? []).filter((uid) => Number.isInteger(uid) && uid > 0))];
+  if (!uniqueUids.length) {
+    return;
   }
+
+  await withImapClient(config, logger, async (client) => {
+    await client.messageFlagsAdd(uniqueUids, ['\\Seen'], { uid: true });
+    logger.info('Marked reply emails as seen', { count: uniqueUids.length });
+  });
 }
