@@ -38,10 +38,12 @@ jobs:
       BOT_IMAP_PORT: ${{ secrets.BOT_IMAP_PORT }}
       BOT_IMAP_USER: ${{ secrets.BOT_IMAP_USER }}
       BOT_IMAP_PASS: ${{ secrets.BOT_IMAP_PASS }}
+      RECIPIENT_TARGETS: ${{ secrets.RECIPIENT_TARGETS }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
       PRODUCT_CATEGORY: ${{ secrets.PRODUCT_CATEGORY }}
       PRODUCT_URL_BASE: ${{ secrets.PRODUCT_URL_BASE }}
       PINCODE: ${{ secrets.PINCODE }}
+      LOW_STOCK_THRESHOLD: ${{ secrets.LOW_STOCK_THRESHOLD || '10' }}
       GITHUB_RUN_ID: ${{ github.run_id }}
       GITHUB_REPOSITORY: ${{ github.repository }}
     steps:

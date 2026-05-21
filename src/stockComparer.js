@@ -14,7 +14,11 @@ function normalizeCachedRow(row) {
   };
 }
 
-function buildEvent(eventType, previousRow, currentProduct, runId) {
+export function buildCacheKey(target, sku) {
+  return `${target.category}:${target.pincode}:${sku}`;
+}
+
+function buildAlertEvent(eventType, previousRow, currentProduct, target, runId) {
   return {
     runId,
     sku: currentProduct.sku,
@@ -27,62 +31,87 @@ function buildEvent(eventType, previousRow, currentProduct, runId) {
     previousPrice: previousRow ? roundPrice(previousRow.price) : null,
     currentPrice: currentProduct.price,
     productUrl: currentProduct.productUrl,
+    pincode: target.pincode,
     metadata: {
       category: currentProduct.category,
-      currency: currentProduct.currency
+      currency: currentProduct.currency,
+      pincode: target.pincode
     }
   };
 }
 
-export function compareStock(previousRows, currentProducts, runId, observedAt) {
+function crossedIntoLowStock(previousRow, currentProduct, lowStockThreshold) {
+  if (!currentProduct.inStock || currentProduct.quantity >= lowStockThreshold) {
+    return false;
+  }
+
+  if (!previousRow) {
+    return true;
+  }
+
+  if (!previousRow.in_stock) {
+    return false;
+  }
+
+  return Number(previousRow.quantity ?? 0) >= lowStockThreshold;
+}
+
+function buildCacheRow(target, product, observedAt, changed, previousRow) {
+  return {
+    cache_key: buildCacheKey(target, product.sku),
+    pincode: target.pincode,
+    sku: product.sku,
+    name: product.name,
+    brand: product.brand,
+    category: product.category,
+    product_url: product.productUrl,
+    image_url: product.imageUrl,
+    currency: product.currency,
+    price: product.price,
+    in_stock: product.inStock,
+    quantity: product.quantity,
+    metadata: product.metadata,
+    last_seen_at: observedAt,
+    last_changed_at: changed ? observedAt : previousRow?.last_changed_at ?? observedAt
+  };
+}
+
+export function compareStock(previousRows, currentProducts, target, runId, observedAt, options = {}) {
+  const lowStockThreshold = Number(options.lowStockThreshold ?? 10);
   const previousBySku = new Map(previousRows.map((row) => [row.sku, normalizeCachedRow(row)]));
-  const events = [];
+  const alertEvents = [];
   const cacheRows = [];
+  const isInitialSnapshot = previousRows.length === 0;
 
   for (const product of currentProducts) {
     const previousRow = previousBySku.get(product.sku);
     let changed = false;
 
-    if (!previousRow) {
-      events.push(buildEvent('new_product', null, product, runId));
-      changed = true;
+    if (previousRow) {
+      changed =
+        Boolean(previousRow.in_stock) !== Boolean(product.inStock) ||
+        Number(previousRow.quantity) !== Number(product.quantity) ||
+        roundPrice(previousRow.price) !== roundPrice(product.price);
     } else {
-      if (!previousRow.in_stock && product.inStock) {
-        events.push(buildEvent('restock', previousRow, product, runId));
-        changed = true;
-      }
+      changed = true;
+    }
 
-      if (Number(previousRow.quantity) !== Number(product.quantity)) {
-        events.push(buildEvent('quantity_change', previousRow, product, runId));
-        changed = true;
-      }
-
-      if (roundPrice(previousRow.price) !== roundPrice(product.price)) {
-        events.push(buildEvent('price_change', previousRow, product, runId));
-        changed = true;
+    if (!isInitialSnapshot) {
+      if (previousRow && !previousRow.in_stock && product.inStock) {
+        alertEvents.push(buildAlertEvent('restock', previousRow, product, target, runId));
+      } else if (previousRow && previousRow.in_stock && !product.inStock) {
+        alertEvents.push(buildAlertEvent('out_of_stock', previousRow, product, target, runId));
+      } else if (crossedIntoLowStock(previousRow, product, lowStockThreshold)) {
+        alertEvents.push(buildAlertEvent('low_stock', previousRow, product, target, runId));
       }
     }
 
-    cacheRows.push({
-      sku: product.sku,
-      name: product.name,
-      brand: product.brand,
-      category: product.category,
-      product_url: product.productUrl,
-      image_url: product.imageUrl,
-      currency: product.currency,
-      price: product.price,
-      in_stock: product.inStock,
-      quantity: product.quantity,
-      metadata: product.metadata,
-      last_seen_at: observedAt,
-      last_changed_at: changed ? observedAt : previousRow?.last_changed_at ?? observedAt
-    });
+    cacheRows.push(buildCacheRow(target, product, observedAt, changed, previousRow));
   }
 
   return {
-    events,
-    cacheRows
+    alertEvents,
+    cacheRows,
+    isInitialSnapshot
   };
 }
-

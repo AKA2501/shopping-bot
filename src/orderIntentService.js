@@ -28,6 +28,7 @@ export async function createManualOrderIntent(supabase, input) {
   const row = {
     email_command_id: input.emailCommandId,
     sender_email: input.senderEmail,
+    pincode: input.target?.pincode ?? null,
     sku: input.sku,
     requested_quantity: input.quantity,
     mode: 'manual_checkout_only',
@@ -40,4 +41,3 @@ export async function createManualOrderIntent(supabase, input) {
 
   return insertOrderIntent(supabase, row);
 }
-

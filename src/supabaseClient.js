@@ -38,14 +38,24 @@ export function getSupabaseClient(config) {
   });
 }
 
-export async function loadCachedProductsBySkus(supabase, skus) {
+export async function loadCachedProductsBySkus(supabase, target, skus) {
   if (!skus.length) {
     return [];
   }
 
-  const { data, error } = await supabase.from('product_stock_cache').select('*').in('sku', skus);
-  assertNoError(error, 'Failed to load product_stock_cache rows');
-  return data ?? [];
+  let response = await supabase
+    .from('product_stock_cache')
+    .select('*')
+    .eq('category', target.category)
+    .eq('pincode', target.pincode)
+    .in('sku', skus);
+
+  if (response.error && String(response.error.message).includes('pincode')) {
+    response = await supabase.from('product_stock_cache').select('*').in('sku', skus);
+  }
+
+  assertNoError(response.error, 'Failed to load product_stock_cache rows');
+  return response.data ?? [];
 }
 
 export async function insertStockEvents(supabase, events) {
@@ -55,6 +65,7 @@ export async function insertStockEvents(supabase, events) {
 
   const rows = events.map((event) => ({
     run_id: event.runId,
+    pincode: event.pincode,
     sku: event.sku,
     event_type: event.eventType,
     product_name: event.productName,
@@ -68,16 +79,26 @@ export async function insertStockEvents(supabase, events) {
     metadata: event.metadata
   }));
 
-  let response = await supabase.from('stock_events').insert(rows).select();
+  let rowsToInsert = rows;
+  let response = await supabase.from('stock_events').insert(rowsToInsert).select();
   if (!response.error) {
     return response.data ?? [];
+  }
+
+  if (String(response.error.message).includes('pincode')) {
+    rowsToInsert = rows.map(({ pincode, ...row }) => row);
+    response = await supabase.from('stock_events').insert(rowsToInsert).select();
+
+    if (!response.error) {
+      return response.data ?? [];
+    }
   }
 
   if (String(response.error.message).includes('event_hash')) {
     response = await supabase
       .from('stock_events')
       .insert(
-        rows.map((row) => ({
+        rowsToInsert.map((row) => ({
           ...row,
           event_hash: createHash('sha256')
             .update(JSON.stringify(row))
@@ -100,13 +121,22 @@ export async function upsertProductCache(supabase, cacheRows) {
     return [];
   }
 
-  const { data, error } = await supabase
+  let rowsToUpsert = cacheRows;
+  let response = await supabase
     .from('product_stock_cache')
-    .upsert(cacheRows, { onConflict: 'sku' })
+    .upsert(rowsToUpsert, { onConflict: 'cache_key' })
     .select();
 
-  assertNoError(error, 'Failed to upsert product_stock_cache');
-  return data ?? [];
+  if (response.error && String(response.error.message).includes('cache_key')) {
+    rowsToUpsert = cacheRows.map(({ cache_key, pincode, ...row }) => row);
+    response = await supabase
+      .from('product_stock_cache')
+      .upsert(rowsToUpsert, { onConflict: 'sku' })
+      .select();
+  }
+
+  assertNoError(response.error, 'Failed to upsert product_stock_cache');
+  return response.data ?? [];
 }
 
 export async function getExistingEmailCommand(supabase, messageId) {
@@ -179,35 +209,99 @@ export async function updateEmailCommand(supabase, id, row) {
   return data;
 }
 
-export async function getProductBySku(supabase, sku) {
-  const { data, error } = await supabase
+export async function getProductBySku(supabase, target, sku) {
+  let response = await supabase
     .from('product_stock_cache')
     .select('*')
+    .eq('category', target.category)
+    .eq('pincode', target.pincode)
     .eq('sku', sku)
     .maybeSingle();
 
-  assertNoError(error, 'Failed to load product by SKU');
-  return data;
+  if (response.error && String(response.error.message).includes('pincode')) {
+    response = await supabase.from('product_stock_cache').select('*').eq('sku', sku).maybeSingle();
+  }
+
+  assertNoError(response.error, 'Failed to load product by SKU');
+  return response.data;
 }
 
-export async function listInStockProducts(supabase, category, limit = 25) {
-  const { data, error } = await supabase
+export async function listInStockProducts(supabase, target, limit = 25) {
+  let response = await supabase
     .from('product_stock_cache')
     .select('*')
-    .eq('category', category)
+    .eq('category', target.category)
+    .eq('pincode', target.pincode)
     .eq('in_stock', true)
     .gt('quantity', 0)
     .order('quantity', { ascending: false })
     .limit(limit);
 
-  assertNoError(error, 'Failed to list in-stock products');
-  return data ?? [];
+  if (response.error && String(response.error.message).includes('pincode')) {
+    response = await supabase
+      .from('product_stock_cache')
+      .select('*')
+      .eq('category', target.category)
+      .eq('in_stock', true)
+      .gt('quantity', 0)
+      .order('quantity', { ascending: false })
+      .limit(limit);
+  }
+
+  assertNoError(response.error, 'Failed to list in-stock products');
+  return response.data ?? [];
+}
+
+export async function getProductsBySkuAcrossTargets(supabase, targets, sku) {
+  if (!targets.length) {
+    return [];
+  }
+
+  const pincodes = [...new Set(targets.map((target) => target.pincode))];
+  const categories = [...new Set(targets.map((target) => target.category))];
+  let response = await supabase
+    .from('product_stock_cache')
+    .select('*')
+    .eq('sku', sku)
+    .in('pincode', pincodes)
+    .in('category', categories)
+    .order('pincode', { ascending: true });
+
+  if (response.error && String(response.error.message).includes('pincode')) {
+    response = await supabase.from('product_stock_cache').select('*').eq('sku', sku);
+  }
+
+  assertNoError(response.error, 'Failed to load products by SKU across targets');
+  return response.data ?? [];
+}
+
+export async function listInStockProductsAcrossTargets(supabase, targets, limit = 25) {
+  const results = [];
+
+  for (const target of targets) {
+    const products = await listInStockProducts(supabase, target, limit);
+    results.push({
+      target,
+      products
+    });
+  }
+
+  return results;
 }
 
 export async function insertOrderIntent(supabase, row) {
-  const { data, error } = await supabase.from('order_intents').insert(row).select().single();
-  assertNoError(error, 'Failed to insert order intent');
-  return data;
+  let response = await supabase.from('order_intents').insert(row).select().single();
+  if (!response.error) {
+    return response.data;
+  }
+
+  if (String(response.error.message).includes('pincode')) {
+    const { pincode, ...fallbackRow } = row;
+    response = await supabase.from('order_intents').insert(fallbackRow).select().single();
+  }
+
+  assertNoError(response.error, 'Failed to insert order intent');
+  return response.data;
 }
 
 export async function verifyTables(supabase, tableNames = REQUIRED_TABLES) {

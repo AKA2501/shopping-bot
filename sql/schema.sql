@@ -11,7 +11,9 @@ end;
 $$;
 
 create table if not exists public.product_stock_cache (
-  sku text primary key,
+  cache_key text primary key,
+  pincode text not null,
+  sku text not null,
   name text not null,
   brand text,
   category text not null,
@@ -28,12 +30,98 @@ create table if not exists public.product_stock_cache (
   updated_at timestamptz not null default timezone('utc', now())
 );
 
+alter table public.product_stock_cache add column if not exists cache_key text;
+alter table public.product_stock_cache add column if not exists pincode text default 'global';
+alter table public.product_stock_cache add column if not exists sku text;
+alter table public.product_stock_cache add column if not exists name text;
+alter table public.product_stock_cache add column if not exists brand text;
+alter table public.product_stock_cache add column if not exists category text;
+alter table public.product_stock_cache add column if not exists product_url text;
+alter table public.product_stock_cache add column if not exists image_url text;
+alter table public.product_stock_cache add column if not exists currency text default 'INR';
+alter table public.product_stock_cache add column if not exists price numeric(12, 2);
+alter table public.product_stock_cache add column if not exists in_stock boolean default false;
+alter table public.product_stock_cache add column if not exists quantity integer default 0;
+alter table public.product_stock_cache add column if not exists metadata jsonb default '{}'::jsonb;
+alter table public.product_stock_cache add column if not exists last_seen_at timestamptz default timezone('utc', now());
+alter table public.product_stock_cache add column if not exists last_changed_at timestamptz default timezone('utc', now());
+alter table public.product_stock_cache add column if not exists created_at timestamptz default timezone('utc', now());
+alter table public.product_stock_cache add column if not exists updated_at timestamptz default timezone('utc', now());
+
+update public.product_stock_cache
+set
+  pincode = coalesce(pincode, 'global'),
+  cache_key = coalesce(cache_key, concat_ws(':', coalesce(category, 'uncategorized'), coalesce(pincode, 'global'), sku)),
+  currency = coalesce(currency, 'INR'),
+  in_stock = coalesce(in_stock, false),
+  quantity = coalesce(quantity, 0),
+  metadata = coalesce(metadata, '{}'::jsonb),
+  last_seen_at = coalesce(last_seen_at, timezone('utc', now())),
+  last_changed_at = coalesce(last_changed_at, timezone('utc', now())),
+  created_at = coalesce(created_at, timezone('utc', now())),
+  updated_at = coalesce(updated_at, timezone('utc', now()))
+where
+  pincode is null
+  or cache_key is null
+  or currency is null
+  or in_stock is null
+  or quantity is null
+  or metadata is null
+  or last_seen_at is null
+  or last_changed_at is null
+  or created_at is null
+  or updated_at is null;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.product_stock_cache'::regclass
+      and conname = 'product_stock_cache_pkey'
+  ) then
+    alter table public.product_stock_cache drop constraint product_stock_cache_pkey;
+  end if;
+end
+$$;
+
+alter table public.product_stock_cache alter column cache_key set not null;
+alter table public.product_stock_cache alter column pincode set not null;
+alter table public.product_stock_cache alter column sku set not null;
+alter table public.product_stock_cache alter column name set not null;
+alter table public.product_stock_cache alter column category set not null;
+alter table public.product_stock_cache alter column currency set not null;
+alter table public.product_stock_cache alter column in_stock set not null;
+alter table public.product_stock_cache alter column quantity set not null;
+alter table public.product_stock_cache alter column metadata set not null;
+alter table public.product_stock_cache alter column last_seen_at set not null;
+alter table public.product_stock_cache alter column last_changed_at set not null;
+alter table public.product_stock_cache alter column created_at set not null;
+alter table public.product_stock_cache alter column updated_at set not null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.product_stock_cache'::regclass
+      and conname = 'product_stock_cache_pkey'
+  ) then
+    alter table public.product_stock_cache add constraint product_stock_cache_pkey primary key (cache_key);
+  end if;
+end
+$$;
+
+create unique index if not exists idx_product_stock_cache_cache_key
+  on public.product_stock_cache (cache_key);
+
 create table if not exists public.stock_events (
   id uuid primary key default gen_random_uuid(),
   event_hash text,
   run_id uuid not null,
+  pincode text,
   sku text not null,
-  event_type text not null check (event_type in ('new_product', 'restock', 'quantity_change', 'price_change')),
+  event_type text not null check (event_type in ('restock', 'out_of_stock', 'low_stock', 'new_product', 'quantity_change', 'price_change')),
   product_name text not null,
   previous_in_stock boolean,
   current_in_stock boolean,
@@ -48,6 +136,7 @@ create table if not exists public.stock_events (
 
 alter table public.stock_events add column if not exists event_hash text;
 alter table public.stock_events add column if not exists run_id uuid;
+alter table public.stock_events add column if not exists pincode text;
 alter table public.stock_events add column if not exists sku text;
 alter table public.stock_events add column if not exists event_type text;
 alter table public.stock_events add column if not exists product_name text;
@@ -87,6 +176,11 @@ alter table public.stock_events alter column event_type set not null;
 alter table public.stock_events alter column product_name set not null;
 alter table public.stock_events alter column metadata set not null;
 alter table public.stock_events alter column created_at set not null;
+
+alter table public.stock_events drop constraint if exists stock_events_event_type_check;
+alter table public.stock_events
+  add constraint stock_events_event_type_check
+  check (event_type in ('restock', 'out_of_stock', 'low_stock', 'new_product', 'quantity_change', 'price_change'));
 
 create table if not exists public.email_commands (
   id uuid primary key default gen_random_uuid(),
@@ -164,6 +258,7 @@ create table if not exists public.order_intents (
   id uuid primary key default gen_random_uuid(),
   email_command_id uuid references public.email_commands(id) on delete set null,
   sender_email text not null,
+  pincode text,
   sku text not null,
   requested_quantity integer not null check (requested_quantity > 0),
   mode text not null default 'manual_checkout_only' check (mode = 'manual_checkout_only'),
@@ -178,6 +273,7 @@ create table if not exists public.order_intents (
 
 alter table public.order_intents add column if not exists email_command_id uuid;
 alter table public.order_intents add column if not exists sender_email text;
+alter table public.order_intents add column if not exists pincode text;
 alter table public.order_intents add column if not exists sku text;
 alter table public.order_intents add column if not exists requested_quantity integer;
 alter table public.order_intents add column if not exists mode text default 'manual_checkout_only';
@@ -219,7 +315,7 @@ alter table public.order_intents alter column created_at set not null;
 alter table public.order_intents alter column updated_at set not null;
 
 create index if not exists idx_product_stock_cache_category_stock
-  on public.product_stock_cache (category, in_stock, quantity);
+  on public.product_stock_cache (category, pincode, in_stock, quantity);
 
 create index if not exists idx_stock_events_run_id
   on public.stock_events (run_id, created_at desc);

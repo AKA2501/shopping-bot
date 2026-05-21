@@ -4,6 +4,7 @@ function productSnapshot(product) {
   }
 
   return [
+    product.pincode ? `Pincode: ${product.pincode}` : null,
     `SKU: ${product.sku}`,
     `Name: ${product.name}`,
     `Stock: ${product.in_stock ? 'IN STOCK' : 'OUT OF STOCK'}`,
@@ -65,19 +66,39 @@ export function buildUnauthorizedReply(senderEmail) {
 }
 
 export function buildStatusReply(product, sku) {
+  const snapshots = Array.isArray(product)
+    ? product.length
+      ? product.map((entry) => productSnapshot(entry)).join('\n\n---\n\n')
+      : `No cached product was found for SKU ${sku}.`
+    : productSnapshot(product);
+
   return {
     subject: `Stock Status ${sku}`,
-    text: [productSnapshot(product), commandFooter()].join('\n\n')
+    text: [snapshots, commandFooter()].join('\n\n')
   };
 }
 
-export function buildListReply(products, category) {
-  const lines = products.length
-    ? products.map(
+export function buildListReply(groupedProducts, category) {
+  const lines = [];
+
+  for (const entry of groupedProducts) {
+    if (!entry.products.length) {
+      continue;
+    }
+
+    lines.push(`Pincode ${entry.target.pincode}:`);
+    lines.push(
+      ...entry.products.map(
         (product) =>
           `- ${product.sku} | ${product.name} | qty ${product.quantity} | price ${product.price ?? 'N/A'} ${product.currency ?? 'INR'}${product.product_url ? ` | ${product.product_url}` : ''}`
       )
-    : ['No in-stock products were found in the cache.'];
+    );
+    lines.push('');
+  }
+
+  if (!lines.length) {
+    lines.push('No in-stock products were found in the cache.');
+  }
 
   return {
     subject: `In-Stock Products for ${category}`,
@@ -90,7 +111,8 @@ export function buildBuyReply(product, intent, quantity) {
     `Order intent recorded: ${intent.id}`,
     `Requested quantity: ${quantity}`,
     `Mode: manual checkout only`,
-    `Intent status: ${intent.status}`
+    `Intent status: ${intent.status}`,
+    intent.pincode ? `Pincode: ${intent.pincode}` : null
   ];
 
   if (product) {
@@ -106,4 +128,3 @@ export function buildBuyReply(product, intent, quantity) {
     text: lines.join('\n\n')
   };
 }
-

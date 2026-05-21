@@ -13,6 +13,76 @@ import {
   upsertProductCache
 } from './supabaseClient.js';
 
+async function processWatchTarget(config, target, supabase, logger, runId, observedAt) {
+  const targetConfig = {
+    ...config,
+    productCategory: target.category,
+    pincode: target.pincode,
+    emailRecipients: target.recipients
+  };
+
+  logger.info('Processing watch target', {
+    target: target.key,
+    category: target.category,
+    pincode: target.pincode,
+    recipients: target.recipients
+  });
+
+  const rawProducts = await fetchProteinProducts(targetConfig, logger);
+  const normalizedProducts = normalizeProducts(rawProducts, targetConfig, logger);
+  const previousRows = await loadCachedProductsBySkus(
+    supabase,
+    target,
+    normalizedProducts.map((product) => product.sku)
+  );
+
+  const { alertEvents, cacheRows, isInitialSnapshot } = compareStock(
+    previousRows,
+    normalizedProducts,
+    target,
+    runId,
+    observedAt,
+    {
+      lowStockThreshold: config.lowStockThreshold
+    }
+  );
+
+  logger.info('Compared stock snapshot', {
+    target: target.key,
+    productCount: normalizedProducts.length,
+    alertEventCount: alertEvents.length,
+    isInitialSnapshot
+  });
+
+  if (config.dryRun) {
+    logger.info('Dry run: skipping stock event inserts and cache updates', {
+      target: target.key,
+      eventCount: alertEvents.length,
+      cacheRowCount: cacheRows.length
+    });
+  } else {
+    await insertStockEvents(supabase, alertEvents);
+    await upsertProductCache(supabase, cacheRows);
+  }
+
+  await sendGroupedStockEmail(
+    config,
+    logger,
+    target,
+    alertEvents,
+    normalizedProducts,
+    runId,
+    isInitialSnapshot
+  );
+
+  return {
+    target,
+    productCount: normalizedProducts.length,
+    alertEventCount: alertEvents.length,
+    isInitialSnapshot
+  };
+}
+
 async function main() {
   const config = loadConfig();
   const logger = createLogger();
@@ -25,37 +95,14 @@ async function main() {
     dryRun: config.dryRun,
     checkReplies: config.checkReplies,
     repository: config.repository,
-    workflowRunId: config.workflowRunId
+    workflowRunId: config.workflowRunId,
+    targetCount: config.watchTargets.length
   });
 
-  const rawProducts = await fetchProteinProducts(config, logger);
-  const normalizedProducts = normalizeProducts(rawProducts, config, logger);
-  const previousRows = await loadCachedProductsBySkus(
-    supabase,
-    normalizedProducts.map((product) => product.sku)
-  );
+  const results = [];
 
-  const { events, cacheRows } = compareStock(previousRows, normalizedProducts, runId, observedAt);
-  logger.info('Compared stock snapshot', {
-    productCount: normalizedProducts.length,
-    eventCount: events.length
-  });
-
-  if (config.dryRun) {
-    logger.info('Dry run: skipping stock event inserts and cache updates', {
-      eventCount: events.length,
-      cacheRowCount: cacheRows.length
-    });
-  } else {
-    await insertStockEvents(supabase, events);
-    if (events.length) {
-      await sendGroupedStockEmail(config, logger, events, runId);
-    }
-    await upsertProductCache(supabase, cacheRows);
-  }
-
-  if (config.dryRun && events.length) {
-    await sendGroupedStockEmail(config, logger, events, runId);
+  for (const target of config.watchTargets) {
+    results.push(await processWatchTarget(config, target, supabase, logger, runId, observedAt));
   }
 
   if (config.checkReplies) {
@@ -73,8 +120,8 @@ async function main() {
 
   logger.info('Stock check finished', {
     runId,
-    productCount: normalizedProducts.length,
-    eventCount: events.length
+    targetCount: results.length,
+    results
   });
 }
 

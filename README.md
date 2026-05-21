@@ -1,21 +1,21 @@
 # Shopping Bot Stock Alert System
 
-Node.js 20 stock watcher that runs every 5 minutes in GitHub Actions, stores product state in Supabase, sends one grouped stock email per run, reads reply commands over IMAP, and creates manual-checkout order intents.
+Node.js 20 stock watcher that runs every 5 minutes in GitHub Actions, stores stock state in Supabase, sends cleaner grouped stock emails, reads reply commands over IMAP, and creates manual-checkout order intents.
 
 ## What it does
 
-- Fetches protein products from `PRODUCT_URL_BASE` using `PRODUCT_CATEGORY` and `PINCODE`
-- Normalizes products into a stable stock cache
-- Detects new products, restocks, quantity changes, and price changes
-- Stores `stock_events` and updates `product_stock_cache` in Supabase
-- Sends one grouped stock update email when changes are detected
+- Watches one or more `pincode -> recipient(s)` targets
+- Stores pincode-scoped cache rows in Supabase
+- Sends cleaner alerts only for:
+  - `OUT OF STOCK -> IN STOCK`
+  - `IN STOCK -> OUT OF STOCK`
+  - `LOW STOCK` when quantity crosses below `LOW_STOCK_THRESHOLD`
+- Sends a clean initial stock snapshot when a target has no prior cache
 - Reads recent inbox replies and supports:
   - `BUY <SKU> <QTY>`
   - `STATUS <SKU>`
   - `LIST IN_STOCK`
   - `HELP`
-- Saves `email_commands` and `order_intents`
-- Replies with manual checkout guidance only
 
 ## Required repository secrets
 
@@ -29,16 +29,28 @@ Node.js 20 stock watcher that runs every 5 minutes in GitHub Actions, stores pro
 - `BOT_IMAP_PORT`
 - `BOT_IMAP_USER`
 - `BOT_IMAP_PASS`
-- `EMAIL_TO`
 - `PRODUCT_CATEGORY`
 - `PRODUCT_URL_BASE`
-- `PINCODE`
+
+Use one of these config styles:
+
+- Preferred: `RECIPIENT_TARGETS`
+- Legacy fallback: `EMAIL_TO` and `PINCODE`
+
+Example `RECIPIENT_TARGETS` secret:
+
+```json
+[
+  { "pincode": "122004", "recipients": ["alice@example.com"] },
+  { "pincode": "110001", "recipients": ["bob@example.com", "team@example.com"] }
+]
+```
 
 ## Setup
 
-1. Apply [sql/schema.sql](/C:/Users/aniru/Documents/Codex/2026-05-20/work-inside-this-repository-https-github/sql/schema.sql) in the Supabase SQL Editor.
+1. Apply [sql/schema.sql](/C:/Users/aniru/Documents/Codex/2026-05-20/work-inside-this-repository-https-github/sql/schema.sql) in Supabase.
 2. Add the required GitHub repository secrets.
-3. Optionally copy `.env.example` to `.env` for local runs.
+3. Optionally copy [.env.example](/C:/Users/aniru/Documents/Codex/2026-05-20/work-inside-this-repository-https-github/.env.example) to `.env` for local runs.
 4. Install dependencies with `npm install`.
 5. Verify database access with `npm run db:init`.
 
@@ -50,16 +62,13 @@ Node.js 20 stock watcher that runs every 5 minutes in GitHub Actions, stores pro
 - `npm run replies:check`
 - `npm run send:test-email`
 
-## Notes
+## Testing and troubleshooting
 
-- `PRODUCT_URL_BASE` should point to the upstream JSON product endpoint or base URL used for product fetches.
-- The fetch client sends `category` and `pincode` as query params and supports common JSON response shapes such as a top-level array, `products`, `data.products`, `items`, or `results`.
-- Order mode is manual checkout only. There is no auto-login, OTP bypass, CAPTCHA bypass, anti-bot bypass, auto-pay, or payment storage.
+- Re-run [sql/schema.sql](/C:/Users/aniru/Documents/Codex/2026-05-20/work-inside-this-repository-https-github/sql/schema.sql) after upgrading to the multi-pincode cache model.
+- If alerts stop on GitHub Actions but local runs work, verify Gmail app-password secrets for both SMTP and IMAP.
+- If replies are skipped, confirm the sender email appears in at least one `RECIPIENT_TARGETS` recipient list.
+- Use `npm run check:dry` to preview alert formatting without writing to Supabase or sending email.
 
-## Troubleshooting
+## Safety
 
-- If `npm run db:init` reports missing tables, apply [sql/schema.sql](/C:/Users/aniru/Documents/Codex/2026-05-20/work-inside-this-repository-https-github/sql/schema.sql) in Supabase and rerun the check.
-- If no products are found, verify `PRODUCT_URL_BASE`, `PRODUCT_CATEGORY`, and `PINCODE`, and confirm the endpoint returns product JSON.
-- If replies are skipped, confirm the sender address is included in `EMAIL_TO` and that IMAP credentials point to the bot inbox.
-- Use `npm run check:dry` before turning on the scheduled workflow.
-
+Manual checkout only. No auto-login, OTP bypass, CAPTCHA bypass, anti-bot bypass, auto-pay, or payment storage is performed.

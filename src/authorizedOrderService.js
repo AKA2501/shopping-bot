@@ -1,4 +1,5 @@
 import { fetchRecentReplyEmails } from './emailReplyReader.js';
+import { getPrimaryReplyTarget, getReplyTargetsForSender } from './config.js';
 import { sendReplyEmail } from './emailSender.js';
 import {
   buildBuyReply,
@@ -12,8 +13,9 @@ import { parseReplyCommand } from './replyParser.js';
 import {
   getExistingEmailCommand,
   getProductBySku,
+  getProductsBySkuAcrossTargets,
   insertEmailCommand,
-  listInStockProducts,
+  listInStockProductsAcrossTargets,
   updateEmailCommand
 } from './supabaseClient.js';
 
@@ -39,7 +41,15 @@ function shouldRetryExistingCommand(existingCommand) {
   return ['received', 'error'].includes(existingCommand?.status);
 }
 
-async function resolveCommand(config, supabase, message, parsedCommand, emailCommandId) {
+async function resolveCommand(
+  config,
+  supabase,
+  message,
+  parsedCommand,
+  emailCommandId,
+  senderTargets,
+  primaryTarget
+) {
   switch (parsedCommand.commandName) {
     case 'HELP':
       return {
@@ -48,7 +58,11 @@ async function resolveCommand(config, supabase, message, parsedCommand, emailCom
       };
 
     case 'LIST_IN_STOCK': {
-      const products = await listInStockProducts(supabase, config.productCategory, config.listInStockLimit);
+      const products = await listInStockProductsAcrossTargets(
+        supabase,
+        senderTargets,
+        config.listInStockLimit
+      );
       return {
         status: 'processed',
         ...buildListReply(products, config.productCategory)
@@ -56,7 +70,11 @@ async function resolveCommand(config, supabase, message, parsedCommand, emailCom
     }
 
     case 'STATUS': {
-      const product = await getProductBySku(supabase, parsedCommand.payload.sku);
+      const product =
+        senderTargets.length <= 1
+          ? await getProductBySku(supabase, primaryTarget, parsedCommand.payload.sku)
+          : await getProductsBySkuAcrossTargets(supabase, senderTargets, parsedCommand.payload.sku);
+
       return {
         status: 'processed',
         ...buildStatusReply(product, parsedCommand.payload.sku)
@@ -64,11 +82,20 @@ async function resolveCommand(config, supabase, message, parsedCommand, emailCom
     }
 
     case 'BUY': {
-      const product = await getProductBySku(supabase, parsedCommand.payload.sku);
+      const scopedProducts =
+        senderTargets.length <= 1
+          ? [await getProductBySku(supabase, primaryTarget, parsedCommand.payload.sku)].filter(Boolean)
+          : await getProductsBySkuAcrossTargets(supabase, senderTargets, parsedCommand.payload.sku);
+
+      const product =
+        scopedProducts.find((entry) => entry.pincode === primaryTarget?.pincode) ??
+        (scopedProducts.length === 1 ? scopedProducts[0] : null);
+
       const intent = config.dryRun
         ? {
             id: 'dry-run-intent',
-            status: product?.in_stock ? 'pending_manual_checkout' : product ? 'awaiting_stock' : 'needs_review'
+            status: product?.in_stock ? 'pending_manual_checkout' : product ? 'awaiting_stock' : 'needs_review',
+            pincode: product?.pincode ?? primaryTarget?.pincode ?? null
           }
         : await createManualOrderIntent(supabase, {
             emailCommandId,
@@ -76,9 +103,11 @@ async function resolveCommand(config, supabase, message, parsedCommand, emailCom
             sku: parsedCommand.payload.sku,
             quantity: parsedCommand.payload.quantity,
             product,
+            target: primaryTarget,
             metadata: {
               source: 'email_reply',
-              received_at: message.receivedAt
+              received_at: message.receivedAt,
+              pincode: product?.pincode ?? primaryTarget?.pincode ?? null
             }
           });
 
@@ -117,6 +146,9 @@ export async function processReplyInbox(config, supabase, logger) {
       continue;
     }
 
+    const senderTargets = getReplyTargetsForSender(config, message.fromAddress);
+    const primaryTarget = getPrimaryReplyTarget(config, message.fromAddress);
+
     const parsedCommand = parseReplyCommand(message.text || message.subject || '');
     let emailCommandId = existing?.id ?? null;
 
@@ -126,7 +158,15 @@ export async function processReplyInbox(config, supabase, logger) {
     }
 
     try {
-      const response = await resolveCommand(config, supabase, message, parsedCommand, emailCommandId);
+      const response = await resolveCommand(
+        config,
+        supabase,
+        message,
+        parsedCommand,
+        emailCommandId,
+        senderTargets,
+        primaryTarget
+      );
 
       await sendReplyEmail(config, logger, {
         to: message.fromAddress,
